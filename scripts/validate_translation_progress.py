@@ -76,7 +76,13 @@ def build_expected_batch_ids(
         start = batch_ids.index(expect_from)
     except ValueError as exc:
         raise ValueError(f"--expect-from batch not found: {expect_from}") from exc
-    return batch_ids[start : start + expect_count]
+    expected_batch_ids = batch_ids[start : start + expect_count]
+    if len(expected_batch_ids) != expect_count:
+        raise ValueError(
+            "--expect-count exceeds the remaining batches: "
+            f"requested {expect_count}, available {len(expected_batch_ids)}"
+        )
+    return expected_batch_ids
 
 
 def first_missing_batch(
@@ -115,7 +121,18 @@ def validate(
     segment_ids = [str(row["id"]) for row in segments]
     source_id_set = set(segment_ids)
     translation_ids = [str(row["segment_id"]) for row in translations]
-    translated_id_set = set(translation_ids)
+    empty_translation_ids = sorted(
+        {
+            str(row["segment_id"])
+            for row in translations
+            if not isinstance(row["translation"], str) or not row["translation"].strip()
+        }
+    )
+    translated_id_set = {
+        str(row["segment_id"])
+        for row in translations
+        if isinstance(row["translation"], str) and row["translation"].strip()
+    }
     batch_ids = [str(row["batch_id"]) for row in batches]
 
     duplicate_segment_ids = find_duplicates(segment_ids)
@@ -128,6 +145,7 @@ def validate(
         for segment_id in batch["segment_ids"]
     ]
     batch_segment_id_set = set(batch_segment_ids)
+    duplicate_batch_segment_ids = find_duplicates(batch_segment_ids)
     batch_segment_ids_not_in_segments = sorted(batch_segment_id_set - source_id_set)
     segment_ids_not_in_batches = sorted(source_id_set - batch_segment_id_set)
     unmatched_translation_ids = sorted(translated_id_set - source_id_set)
@@ -184,8 +202,11 @@ def validate(
         "duplicate_segment_ids": duplicate_segment_ids,
         "duplicate_translation_ids": duplicate_translation_ids,
         "duplicate_batch_ids": duplicate_batch_ids,
+        "duplicate_batch_segment_ids": duplicate_batch_segment_ids,
         "batch_segment_ids_not_in_segments": batch_segment_ids_not_in_segments,
+        "segment_ids_not_in_batches": segment_ids_not_in_batches,
         "unmatched_translation_ids": unmatched_translation_ids,
+        "empty_translation_ids": empty_translation_ids,
         "unknown_expected_batches": unknown_expected_batches,
         "expected_missing_by_batch": expected_missing_by_batch,
     }
@@ -209,7 +230,6 @@ def validate(
         },
         "issues": {
             **fatal_issues,
-            "segment_ids_not_in_batches": segment_ids_not_in_batches,
         },
     }
     return report, ok

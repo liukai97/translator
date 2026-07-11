@@ -49,7 +49,7 @@ def validate_rows(
     source_order: dict[str, int],
     existing_ids: set[str],
     allow_existing: bool,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[str]]:
     if not draft_rows:
         raise ValueError("draft contains no translation rows")
 
@@ -78,6 +78,7 @@ def validate_rows(
         raise ValueError("draft rows are not in source segment order")
 
     cleaned_rows: list[dict[str, Any]] = []
+    skipped_existing_ids: list[str] = []
     for row in draft_rows:
         line_number = row.pop("_line_number")
         segment_id = str(row["segment_id"])
@@ -87,11 +88,14 @@ def validate_rows(
             raise ValueError(f"draft line {line_number} ({segment_id}) has an empty translation")
         if status == "needs_review" and not str(row.get("review_note", "")).strip():
             raise ValueError(f"draft line {line_number} ({segment_id}) needs review_note for needs_review")
+        if segment_id in existing_ids:
+            skipped_existing_ids.append(segment_id)
+            continue
         row["segment_id"] = segment_id
         row["translation"] = translation
         row["status"] = status
         cleaned_rows.append(row)
-    return cleaned_rows
+    return cleaned_rows, skipped_existing_ids
 
 
 def append_rows(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -108,7 +112,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("draft", type=Path, help="Draft JSONL containing translated rows.")
     parser.add_argument("--segments", default=Path("work/segments.jsonl"), type=Path)
     parser.add_argument("--translations", default=Path("work/translations.jsonl"), type=Path)
-    parser.add_argument("--allow-existing", action="store_true", help="Allow appending IDs already present.")
+    parser.add_argument(
+        "--allow-existing",
+        action="store_true",
+        help="Skip draft rows whose IDs are already present instead of failing; never append duplicates.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Validate only; do not append.")
     return parser.parse_args()
 
@@ -130,7 +138,7 @@ def main() -> None:
         raise ValueError(f"translations already contains duplicate IDs: {', '.join(existing_duplicates[:20])}")
 
     source_order = {segment_id: index for index, segment_id in enumerate(source_ids)}
-    cleaned_rows = validate_rows(
+    cleaned_rows, skipped_existing_ids = validate_rows(
         draft_rows=draft,
         source_order=source_order,
         existing_ids=set(existing_ids),
@@ -144,9 +152,10 @@ def main() -> None:
         "ok": True,
         "dry_run": args.dry_run,
         "appended_rows": 0 if args.dry_run else len(cleaned_rows),
-        "validated_rows": len(cleaned_rows),
-        "first_segment_id": cleaned_rows[0]["segment_id"],
-        "last_segment_id": cleaned_rows[-1]["segment_id"],
+        "validated_rows": len(draft),
+        "skipped_existing_rows": len(skipped_existing_ids),
+        "first_segment_id": cleaned_rows[0]["segment_id"] if cleaned_rows else None,
+        "last_segment_id": cleaned_rows[-1]["segment_id"] if cleaned_rows else None,
         "translations": str(args.translations),
     }
     print(json.dumps(report, ensure_ascii=False, separators=(",", ":")))

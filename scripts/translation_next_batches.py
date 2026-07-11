@@ -43,6 +43,16 @@ def batch_missing_ids(batch: dict[str, Any], translated_ids: set[str]) -> list[s
     ]
 
 
+def completed_translation_ids(translations: list[dict[str, Any]]) -> set[str]:
+    return {
+        str(row["segment_id"])
+        for row in translations
+        if row.get("segment_id")
+        and isinstance(row.get("translation"), str)
+        and row["translation"].strip()
+    }
+
+
 def select_pending_batches(
     batches: list[dict[str, Any]],
     translated_ids: set[str],
@@ -139,7 +149,7 @@ def main() -> None:
     args = parse_args()
     batches = read_jsonl(args.batches)
     translations = read_jsonl(args.translations, required=False)
-    translated_ids = {str(row.get("segment_id", "")) for row in translations if row.get("segment_id")}
+    translated_ids = completed_translation_ids(translations)
 
     selected = select_pending_batches(
         batches=batches,
