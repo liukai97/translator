@@ -48,7 +48,7 @@ def validate_segments(segments: list[dict[str, Any]]) -> None:
             raise ValueError(f"segment row {index} missing keys: {', '.join(missing)}")
         ids.append(str(segment["id"]))
 
-    duplicate_ids = sorted({segment_id for segment_id in ids if ids.count(segment_id) > 1})
+    duplicate_ids = sorted(segment_id for segment_id, count in Counter(ids).items() if count > 1)
     if duplicate_ids:
         raise ValueError(f"duplicate segment ids: {', '.join(duplicate_ids[:10])}")
 
