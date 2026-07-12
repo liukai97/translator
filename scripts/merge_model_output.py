@@ -12,35 +12,26 @@ import argparse
 import json
 import subprocess
 import sys
-from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from translation_core.cli import emit_json_report
+from translation_core.collections import duplicate_values
+from translation_core.jsonl import read_jsonl as _read_jsonl
+from translation_core.jsonl import write_jsonl_atomic
+from translation_core.paths import (
+    APPEND_TRANSLATIONS_SCRIPT,
+    BATCHES_PATH,
+    SEGMENTS_PATH,
+    TRANSLATIONS_PATH,
+)
+from translation_core.progress import missing_segment_ids
+from translation_core.translations import normalize_translation_row
+from translation_core.validation import validate_batches, validate_translations
+
 
 def read_jsonl(path: Path, required: bool = True) -> list[dict[str, Any]]:
-    if not path.exists():
-        if required:
-            raise FileNotFoundError(path)
-        return []
-
-    rows: list[dict[str, Any]] = []
-    with path.open("r", encoding="utf-8-sig") as file:
-        for line_number, line in enumerate(file, start=1):
-            if not line.strip():
-                continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"{path}:{line_number}: invalid JSON: {exc}") from exc
-            if not isinstance(row, dict):
-                raise ValueError(f"{path}:{line_number}: row must be a JSON object")
-            rows.append(row)
-    return rows
-
-
-def duplicate_values(values: list[str]) -> list[str]:
-    counts = Counter(values)
-    return sorted(value for value, count in counts.items() if count > 1)
+    return _read_jsonl(path, required, encoding="utf-8-sig")
 
 
 def strip_markdown_fence(text: str) -> str:
@@ -96,32 +87,11 @@ def load_expected_ids(
     translations: list[dict[str, Any]],
     batch_id: str,
 ) -> tuple[list[str], dict[str, str]]:
-    batch_ids = [str(batch.get("batch_id", "")) for batch in batches]
-    duplicate_batch_ids = duplicate_values(batch_ids)
-    if duplicate_batch_ids:
-        raise ValueError(f"duplicate batch IDs: {', '.join(duplicate_batch_ids[:20])}")
-
-    source_ids = [
-        str(segment_id)
-        for batch in batches
-        for segment_id in batch.get("segment_ids", [])
-    ]
-    duplicate_source_ids = duplicate_values(source_ids)
-    if duplicate_source_ids:
-        raise ValueError(f"duplicate batch segment IDs: {', '.join(duplicate_source_ids[:20])}")
-
-    translation_ids = [str(row.get("segment_id", "")) for row in translations]
-    duplicate_translation_ids = duplicate_values(translation_ids)
-    if duplicate_translation_ids:
-        raise ValueError(
-            "translations contains duplicate IDs: " + ", ".join(duplicate_translation_ids[:20])
-        )
-    unknown_translation_ids = sorted(set(translation_ids) - set(source_ids))
-    if unknown_translation_ids:
-        raise ValueError(
-            "translations contains IDs outside the current batch data: "
-            + ", ".join(unknown_translation_ids[:20])
-        )
+    _, source_ids = validate_batches(batches)
+    translation_ids = validate_translations(
+        translations,
+        known_segment_ids=set(source_ids),
+    )
 
     selected = next(
         (batch for batch in batches if str(batch.get("batch_id", "")) == batch_id),
@@ -130,22 +100,14 @@ def load_expected_ids(
     if selected is None:
         raise ValueError(f"batch not found: {batch_id}")
 
-    declared_ids = [str(segment_id) for segment_id in selected.get("segment_ids", [])]
     embedded_segments = selected.get("segments", [])
-    embedded_ids = [str(segment.get("id", "")) for segment in embedded_segments]
-    if declared_ids != embedded_ids:
-        raise ValueError(f"batch {batch_id} segment_ids do not match embedded segments")
     source_by_id = {
         str(segment["id"]): str(segment.get("source", ""))
         for segment in embedded_segments
     }
 
     translated_ids = set(translation_ids)
-    expected_ids = [
-        str(segment_id)
-        for segment_id in selected["segment_ids"]
-        if str(segment_id) not in translated_ids
-    ]
+    expected_ids = missing_segment_ids(selected, translated_ids)
     if not expected_ids:
         raise ValueError(f"batch is already fully translated: {batch_id}")
     return expected_ids, source_by_id
@@ -187,52 +149,15 @@ def normalize_rows(
     by_id: dict[str, dict[str, str]] = {}
     for position, row in enumerate(rows, start=1):
         segment_id = str(row["segment_id"])
-        translation = row.get("translation")
-        if not isinstance(translation, str) or not translation.strip():
-            raise ValueError(f"model output row {position} ({segment_id}) has an empty translation")
-
-        normalized_translation = translation.replace("\r\n", "\n").replace("\r", "\n").strip()
-        normalized_source = source_by_id[segment_id].replace("\r\n", "\n").replace("\r", "\n")
-        source_line_breaks = normalized_source.count("\n")
-        translation_line_breaks = normalized_translation.count("\n")
-        if translation_line_breaks != source_line_breaks:
-            raise ValueError(
-                f"model output row {position} ({segment_id}) line break count mismatch: "
-                f"source={source_line_breaks}, translation={translation_line_breaks}; "
-                "preserve internal line breaks as escaped \\n inside the JSON string"
-            )
-
-        status = str(row.get("status") or "translated")
-        if status not in {"translated", "needs_review"}:
-            raise ValueError(
-                f"model output row {position} ({segment_id}) has unsupported status: {status}"
-            )
-
-        normalized: dict[str, str] = {
-            "segment_id": segment_id,
-            "translation": normalized_translation,
-            "status": status,
-        }
-        if status == "needs_review":
-            review_note = row.get("review_note")
-            if not isinstance(review_note, str) or not review_note.strip():
-                raise ValueError(
-                    f"model output row {position} ({segment_id}) needs a non-empty review_note"
-                )
-            normalized["review_note"] = review_note.strip()
-        by_id[segment_id] = normalized
+        by_id[segment_id] = normalize_translation_row(
+            row,
+            segment_id=segment_id,
+            source=source_by_id[segment_id],
+            location=f"model output row {position}",
+        )
 
     was_reordered = output_ids != expected_ids
     return [by_id[segment_id] for segment_id in expected_ids], was_reordered
-
-
-def write_jsonl_atomic(path: Path, rows: list[dict[str, str]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = path.with_name(path.name + ".tmp")
-    with temporary_path.open("w", encoding="utf-8", newline="\n") as file:
-        for row in rows:
-            file.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
-    temporary_path.replace(path)
 
 
 def append_merged_output(
@@ -270,9 +195,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("model_output", type=Path)
     parser.add_argument("--batch", required=True, help="Batch ID represented by the model output.")
-    parser.add_argument("--batches", default=Path("work/batches.jsonl"), type=Path)
-    parser.add_argument("--segments", default=Path("work/segments.jsonl"), type=Path)
-    parser.add_argument("--translations", default=Path("work/translations.jsonl"), type=Path)
+    parser.add_argument("--batches", default=BATCHES_PATH, type=Path)
+    parser.add_argument("--segments", default=SEGMENTS_PATH, type=Path)
+    parser.add_argument("--translations", default=TRANSLATIONS_PATH, type=Path)
     parser.add_argument("--output", type=Path, help="Canonical merged JSONL output path.")
     parser.add_argument(
         "--append",
@@ -281,7 +206,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--append-script",
-        default=Path("scripts/append_translations.py"),
+        default=APPEND_TRANSLATIONS_SCRIPT,
         type=Path,
     )
     return parser.parse_args()
@@ -319,7 +244,7 @@ def main() -> None:
         "appended": args.append,
         "append_report": append_report,
     }
-    print(json.dumps(report, ensure_ascii=False, separators=(",", ":")))
+    emit_json_report(report)
 
 
 if __name__ == "__main__":

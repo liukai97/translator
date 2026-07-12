@@ -4,36 +4,18 @@ from __future__ import annotations
 
 import argparse
 import json
-from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from translation_core.cli import emit_json_report
+from translation_core.collections import duplicate_values
+from translation_core.jsonl import read_jsonl as _read_jsonl
+from translation_core.paths import SEGMENTS_PATH, TRANSLATIONS_PATH
+from translation_core.translations import normalize_translation_row
+
 
 def read_jsonl(path: Path, required: bool = True) -> list[dict[str, Any]]:
-    if not path.exists():
-        if required:
-            raise FileNotFoundError(path)
-        return []
-
-    rows: list[dict[str, Any]] = []
-    with path.open("r", encoding="utf-8") as file:
-        for line_number, line in enumerate(file, start=1):
-            if not line.strip():
-                continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"{path}:{line_number}: invalid JSON: {exc}") from exc
-            if not isinstance(row, dict):
-                raise ValueError(f"{path}:{line_number}: row must be a JSON object")
-            row["_line_number"] = line_number
-            rows.append(row)
-    return rows
-
-
-def duplicate_values(values: list[str]) -> list[str]:
-    counts = Counter(values)
-    return sorted(value for value, count in counts.items() if count > 1)
+    return _read_jsonl(path, required, line_number_key="_line_number")
 
 
 def file_ends_with_newline(path: Path) -> bool:
@@ -47,9 +29,10 @@ def file_ends_with_newline(path: Path) -> bool:
 def validate_rows(
     draft_rows: list[dict[str, Any]],
     source_order: dict[str, int],
+    source_by_id: dict[str, str],
     existing_ids: set[str],
     allow_existing: bool,
-) -> tuple[list[dict[str, Any]], list[str]]:
+) -> tuple[list[dict[str, str]], list[str]]:
     if not draft_rows:
         raise ValueError("draft contains no translation rows")
 
@@ -77,24 +60,21 @@ def validate_rows(
     if order_positions != sorted(order_positions):
         raise ValueError("draft rows are not in source segment order")
 
-    cleaned_rows: list[dict[str, Any]] = []
+    cleaned_rows: list[dict[str, str]] = []
     skipped_existing_ids: list[str] = []
     for row in draft_rows:
-        line_number = row.pop("_line_number")
+        line_number = row["_line_number"]
         segment_id = str(row["segment_id"])
-        translation = row.get("translation")
-        status = str(row.get("status") or "translated")
-        if not isinstance(translation, str) or not translation.strip():
-            raise ValueError(f"draft line {line_number} ({segment_id}) has an empty translation")
-        if status == "needs_review" and not str(row.get("review_note", "")).strip():
-            raise ValueError(f"draft line {line_number} ({segment_id}) needs review_note for needs_review")
+        normalized = normalize_translation_row(
+            row,
+            segment_id=segment_id,
+            source=source_by_id[segment_id],
+            location=f"draft line {line_number}",
+        )
         if segment_id in existing_ids:
             skipped_existing_ids.append(segment_id)
             continue
-        row["segment_id"] = segment_id
-        row["translation"] = translation
-        row["status"] = status
-        cleaned_rows.append(row)
+        cleaned_rows.append(normalized)
     return cleaned_rows, skipped_existing_ids
 
 
@@ -110,8 +90,8 @@ def append_rows(path: Path, rows: list[dict[str, Any]]) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Validate and append translated JSONL draft rows.")
     parser.add_argument("draft", type=Path, help="Draft JSONL containing translated rows.")
-    parser.add_argument("--segments", default=Path("work/segments.jsonl"), type=Path)
-    parser.add_argument("--translations", default=Path("work/translations.jsonl"), type=Path)
+    parser.add_argument("--segments", default=SEGMENTS_PATH, type=Path)
+    parser.add_argument("--translations", default=TRANSLATIONS_PATH, type=Path)
     parser.add_argument(
         "--allow-existing",
         action="store_true",
@@ -138,9 +118,14 @@ def main() -> None:
         raise ValueError(f"translations already contains duplicate IDs: {', '.join(existing_duplicates[:20])}")
 
     source_order = {segment_id: index for index, segment_id in enumerate(source_ids)}
+    source_by_id = {
+        str(row.get("id", "")): str(row.get("source", ""))
+        for row in segments
+    }
     cleaned_rows, skipped_existing_ids = validate_rows(
         draft_rows=draft,
         source_order=source_order,
+        source_by_id=source_by_id,
         existing_ids=set(existing_ids),
         allow_existing=args.allow_existing,
     )
@@ -158,7 +143,7 @@ def main() -> None:
         "last_segment_id": cleaned_rows[-1]["segment_id"] if cleaned_rows else None,
         "translations": str(args.translations),
     }
-    print(json.dumps(report, ensure_ascii=False, separators=(",", ":")))
+    emit_json_report(report)
 
 
 if __name__ == "__main__":

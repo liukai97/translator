@@ -8,10 +8,14 @@ segments in one batch, and the exact JSONL output path and schema.
 from __future__ import annotations
 
 import argparse
-import json
-from collections import Counter
 from pathlib import Path
 from typing import Any
+
+from translation_core.cli import emit_json_report
+from translation_core.jsonl import read_jsonl as _read_jsonl
+from translation_core.paths import BATCHES_PATH, CHECKPOINTS_DIR, STYLE_GUIDE_PATH, TRANSLATIONS_PATH
+from translation_core.progress import missing_segment_ids
+from translation_core.validation import validate_batches, validate_translations
 
 
 DEFAULT_STYLE_GUIDE = """\
@@ -28,97 +32,19 @@ DEFAULT_STYLE_GUIDE = """\
 
 
 def read_jsonl(path: Path, required: bool = True) -> list[dict[str, Any]]:
-    if not path.exists():
-        if required:
-            raise FileNotFoundError(path)
-        return []
-
-    rows: list[dict[str, Any]] = []
-    with path.open("r", encoding="utf-8-sig") as file:
-        for line_number, line in enumerate(file, start=1):
-            if not line.strip():
-                continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"{path}:{line_number}: invalid JSON: {exc}") from exc
-            if not isinstance(row, dict):
-                raise ValueError(f"{path}:{line_number}: row must be a JSON object")
-            rows.append(row)
-    return rows
-
-
-def duplicate_values(values: list[str]) -> list[str]:
-    counts = Counter(values)
-    return sorted(value for value, count in counts.items() if count > 1)
+    return _read_jsonl(path, required, encoding="utf-8-sig")
 
 
 def validate_inputs(
     batches: list[dict[str, Any]],
     translations: list[dict[str, Any]],
 ) -> None:
-    batch_ids = [str(batch.get("batch_id", "")) for batch in batches]
-    duplicate_batch_ids = duplicate_values(batch_ids)
-    if duplicate_batch_ids:
-        raise ValueError(f"duplicate batch IDs: {', '.join(duplicate_batch_ids[:20])}")
-
-    segment_ids: list[str] = []
-    for row_number, batch in enumerate(batches, start=1):
-        missing = sorted({"batch_id", "chapter_id", "segment_ids", "segments"} - set(batch))
-        if missing:
-            raise ValueError(f"batch row {row_number} missing keys: {', '.join(missing)}")
-        declared_ids = [str(value) for value in batch["segment_ids"]]
-        embedded_ids = [str(segment.get("id", "")) for segment in batch["segments"]]
-        if declared_ids != embedded_ids:
-            raise ValueError(f"batch {batch['batch_id']} segment_ids do not match embedded segments")
-        segment_ids.extend(declared_ids)
-
-    duplicate_segment_ids = duplicate_values(segment_ids)
-    if duplicate_segment_ids:
-        raise ValueError(f"duplicate batch segment IDs: {', '.join(duplicate_segment_ids[:20])}")
-
-    translation_ids = [str(row.get("segment_id", "")) for row in translations]
-    missing_translation_ids = [str(index) for index, value in enumerate(translation_ids, start=1) if not value]
-    if missing_translation_ids:
-        raise ValueError(
-            "translation rows missing segment_id at lines: " + ", ".join(missing_translation_ids[:20])
-        )
-    duplicate_translation_ids = duplicate_values(translation_ids)
-    if duplicate_translation_ids:
-        raise ValueError(
-            "translations contains duplicate IDs: " + ", ".join(duplicate_translation_ids[:20])
-        )
-    unknown_translation_ids = sorted(set(translation_ids) - set(segment_ids))
-    if unknown_translation_ids:
-        raise ValueError(
-            "translations contains IDs outside the current batch data; refuse to build misleading context: "
-            + ", ".join(unknown_translation_ids[:20])
-        )
-    empty_translation_ids = [
-        str(row["segment_id"])
-        for row in translations
-        if not isinstance(row.get("translation"), str) or not row["translation"].strip()
-    ]
-    if empty_translation_ids:
-        raise ValueError(
-            "translations contains empty entries that must be cleaned before resuming: "
-            + ", ".join(empty_translation_ids[:20])
-        )
+    _, segment_ids = validate_batches(batches)
+    validate_translations(translations, known_segment_ids=set(segment_ids))
 
 
 def translation_map(translations: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return {str(row["segment_id"]): row for row in translations}
-
-
-def missing_segment_ids(
-    batch: dict[str, Any],
-    translated_ids: set[str],
-) -> list[str]:
-    return [
-        str(segment_id)
-        for segment_id in batch["segment_ids"]
-        if str(segment_id) not in translated_ids
-    ]
 
 
 def select_batch(
@@ -330,11 +256,11 @@ def parse_args() -> argparse.Namespace:
         description="Prepare one Markdown request for translating one pending batch."
     )
     parser.add_argument("--batch", help="Batch ID. Default: first pending batch.")
-    parser.add_argument("--batches", default=Path("work/batches.jsonl"), type=Path)
-    parser.add_argument("--translations", default=Path("work/translations.jsonl"), type=Path)
+    parser.add_argument("--batches", default=BATCHES_PATH, type=Path)
+    parser.add_argument("--translations", default=TRANSLATIONS_PATH, type=Path)
     parser.add_argument(
         "--style-guide",
-        default=Path("glossary/style_guide.md"),
+        default=STYLE_GUIDE_PATH,
         type=Path,
         help="Style guide Markdown. Uses a built-in guide when this path does not exist.",
     )
@@ -344,7 +270,7 @@ def parse_args() -> argparse.Namespace:
         type=int,
         help="Maximum completed same-chapter segments to include before the first target. Default: 12",
     )
-    parser.add_argument("--output-dir", default=Path("work/checkpoints"), type=Path)
+    parser.add_argument("--output-dir", default=CHECKPOINTS_DIR, type=Path)
     parser.add_argument("--request-output", type=Path, help="Explicit Markdown request path.")
     parser.add_argument("--model-output", type=Path, help="JSONL path that the model must write.")
     parser.add_argument(
@@ -415,7 +341,7 @@ def main() -> None:
             f'"{model_output_path}" --batch {batch_id} --append'
         ),
     }
-    print(json.dumps(report, ensure_ascii=False, separators=(",", ":")))
+    emit_json_report(report)
 
 
 if __name__ == "__main__":
