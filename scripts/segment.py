@@ -8,24 +8,19 @@ and never become segments.
 from __future__ import annotations
 
 import argparse
-import json
 import re
-from collections import Counter
 from pathlib import Path
 from typing import Any
+
+from translation_core.cli import emit_json_report
+from translation_core.jsonl import write_jsonl
+from translation_core.paths import CLEAN_BOOK_PATH, INPUT_BOOK_PATH, SEGMENTS_PATH
+from translation_core.text import byte_count, read_text
+from translation_core.validation import validate_segments
 
 
 PAGE_MARKER_RE = re.compile(r"^\s*\[page\s+\d+\]\s*$", re.IGNORECASE)
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
-
-
-def read_text(path: Path) -> str:
-    for encoding in ("utf-8-sig", "utf-8", "cp932"):
-        try:
-            return path.read_text(encoding=encoding)
-        except UnicodeDecodeError:
-            continue
-    return path.read_text(encoding="utf-8", errors="replace")
 
 
 def normalize_source(text: str) -> list[str]:
@@ -34,10 +29,6 @@ def normalize_source(text: str) -> list[str]:
 
 def make_segment_id(chapter_id: str, order: int) -> str:
     return f"{chapter_id}-p{order:04d}"
-
-
-def byte_count(text: str) -> int:
-    return len(text.encode("utf-8"))
 
 
 def trim_outer_blank_lines(lines: list[str]) -> list[str]:
@@ -124,25 +115,10 @@ def build_segments(
     return segments
 
 
-def validate_segments(segments: list[dict[str, Any]]) -> None:
-    ids = [segment["id"] for segment in segments]
-    duplicate_ids = sorted(segment_id for segment_id, count in Counter(ids).items() if count > 1)
-    if duplicate_ids:
-        raise ValueError(f"duplicate segment ids: {', '.join(duplicate_ids[:10])}")
-
-
-def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="\n") as file:
-        for row in rows:
-            file.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
-
-
 def default_input_path() -> Path:
-    cleaned = Path("work/book.no_pages.md")
-    if cleaned.exists():
-        return cleaned
-    return Path("input/book.md")
+    if CLEAN_BOOK_PATH.exists():
+        return CLEAN_BOOK_PATH
+    return INPUT_BOOK_PATH
 
 
 def parse_args() -> argparse.Namespace:
@@ -157,7 +133,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output",
-        default="work/segments.jsonl",
+        default=SEGMENTS_PATH,
         type=Path,
         help="JSONL output file. Default: work/segments.jsonl",
     )
@@ -196,19 +172,16 @@ def main() -> None:
     )
     heading_count = sum(1 for segment in segments if segment["kind"] == "heading")
     paragraph_count = sum(1 for segment in segments if segment["kind"] == "paragraph")
-    print(
-        json.dumps(
-            {
-                "input": str(input_path),
-                "output": str(args.output),
-                "segments": len(segments),
-                "chapters": chapter_count,
-                "headings": heading_count,
-                "paragraphs": paragraph_count,
-                "max_segment_bytes": args.max_segment_bytes,
-            },
-            ensure_ascii=False,
-        )
+    emit_json_report(
+        {
+            "input": str(input_path),
+            "output": str(args.output),
+            "segments": len(segments),
+            "chapters": chapter_count,
+            "headings": heading_count,
+            "paragraphs": paragraph_count,
+            "max_segment_bytes": args.max_segment_bytes,
+        }
     )
 
 

@@ -8,21 +8,15 @@ for chapter-based translation work.
 from __future__ import annotations
 
 import argparse
-import json
 import re
 from pathlib import Path
 
+from translation_core.cli import emit_json_report
+from translation_core.paths import CLEAN_BOOK_PATH, INPUT_BOOK_PATH
+from translation_core.text import read_text
+
 
 PAGE_MARKER_RE = re.compile(r"^\s*\[page\s+\d+\]\s*$", re.IGNORECASE)
-
-
-def read_text(path: Path) -> str:
-    for encoding in ("utf-8-sig", "utf-8", "cp932"):
-        try:
-            return path.read_text(encoding=encoding)
-        except UnicodeDecodeError:
-            continue
-    return path.read_text(encoding="utf-8", errors="replace")
 
 
 def strip_page_markers(text: str) -> tuple[str, int]:
@@ -44,13 +38,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--input",
-        default="input/book.md",
+        default=INPUT_BOOK_PATH,
         type=Path,
         help="Source text/Markdown file. Default: input/book.md",
     )
     parser.add_argument(
         "--output",
-        default="work/book.no_pages.md",
+        default=CLEAN_BOOK_PATH,
         type=Path,
         help="Cleaned output file. Default: work/book.no_pages.md",
     )
@@ -65,16 +59,13 @@ def main() -> None:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(cleaned_text, encoding="utf-8", newline="\n")
 
-    print(
-        json.dumps(
-            {
-                "input": str(args.input),
-                "output": str(args.output),
-                "removed_page_markers": removed,
-                "written_lines": len(cleaned_text.splitlines()),
-            },
-            ensure_ascii=False,
-        )
+    emit_json_report(
+        {
+            "input": str(args.input),
+            "output": str(args.output),
+            "removed_page_markers": removed,
+            "written_lines": len(cleaned_text.splitlines()),
+        }
     )
 
 

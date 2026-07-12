@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from translation_core.paths import ASSEMBLE_PARALLEL_SCRIPT, VALIDATE_TRANSLATION_PROGRESS_SCRIPT
+
 
 def run_command(args: list[str]) -> None:
     print("RUN " + " ".join(args), flush=True)
@@ -20,8 +22,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batches", nargs="*", default=[], help="Explicit batch IDs in the checkpoint.")
     parser.add_argument("--list-pending", default=12, type=int)
     parser.add_argument("--skip-assemble", action="store_true")
-    parser.add_argument("--validator", default=Path("scripts/validate_translation_progress.py"), type=Path)
-    parser.add_argument("--assembler", default=Path("scripts/assemble_parallel.py"), type=Path)
+    parser.add_argument("--validator", default=VALIDATE_TRANSLATION_PROGRESS_SCRIPT, type=Path)
+    parser.add_argument("--assembler", default=ASSEMBLE_PARALLEL_SCRIPT, type=Path)
     return parser.parse_args()
 
 

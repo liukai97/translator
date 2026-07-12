@@ -13,9 +13,25 @@ import argparse
 import json
 import subprocess
 import sys
-from collections import Counter
 from pathlib import Path
 from typing import Any
+
+from translation_core.cli import emit_json_report
+from translation_core.jsonl import read_jsonl as _read_jsonl
+from translation_core.paths import (
+    APPEND_TRANSLATIONS_SCRIPT,
+    ASSEMBLE_PARALLEL_SCRIPT,
+    BATCHES_PATH,
+    CHECKPOINTS_DIR,
+    MERGE_MODEL_OUTPUT_SCRIPT,
+    PARALLEL_HTML_PATH,
+    PREPARE_BATCH_REQUEST_SCRIPT,
+    SEGMENTS_PATH,
+    TRANSLATIONS_PATH,
+    VALIDATE_TRANSLATION_PROGRESS_SCRIPT,
+)
+from translation_core.progress import completed_translation_ids, first_pending_batch
+from translation_core.validation import validate_batches, validate_translations
 
 
 REQUEST_BEGIN = "--- TRANSLATION REQUEST BEGIN ---"
@@ -23,59 +39,7 @@ REQUEST_END = "--- TRANSLATION REQUEST END ---"
 
 
 def read_jsonl(path: Path, required: bool = True) -> list[dict[str, Any]]:
-    if not path.exists():
-        if required:
-            raise FileNotFoundError(path)
-        return []
-
-    rows: list[dict[str, Any]] = []
-    with path.open("r", encoding="utf-8-sig") as file:
-        for line_number, line in enumerate(file, start=1):
-            if not line.strip():
-                continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"{path}:{line_number}: invalid JSON: {exc}") from exc
-            if not isinstance(row, dict):
-                raise ValueError(f"{path}:{line_number}: row must be a JSON object")
-            rows.append(row)
-    return rows
-
-
-def duplicate_values(values: list[str]) -> list[str]:
-    counts = Counter(values)
-    return sorted(value for value, count in counts.items() if count > 1)
-
-
-def translated_ids(translations: list[dict[str, Any]]) -> set[str]:
-    ids = [str(row.get("segment_id", "")) for row in translations]
-    duplicates = duplicate_values(ids)
-    if duplicates:
-        raise ValueError("translations contains duplicate IDs: " + ", ".join(duplicates[:20]))
-    return {
-        str(row["segment_id"])
-        for row in translations
-        if row.get("segment_id")
-        and isinstance(row.get("translation"), str)
-        and row["translation"].strip()
-    }
-
-
-def first_pending_batch(
-    batches: list[dict[str, Any]], completed_ids: set[str]
-) -> dict[str, Any] | None:
-    batch_ids = [str(batch.get("batch_id", "")) for batch in batches]
-    duplicates = duplicate_values(batch_ids)
-    if duplicates:
-        raise ValueError("batches contains duplicate IDs: " + ", ".join(duplicates[:20]))
-    if any(not batch_id for batch_id in batch_ids):
-        raise ValueError("batches contains an empty batch_id")
-
-    for batch in batches:
-        if any(str(segment_id) not in completed_ids for segment_id in batch.get("segment_ids", [])):
-            return batch
-    return None
+    return _read_jsonl(path, required, encoding="utf-8-sig")
 
 
 def run_json_command(command: list[str], label: str) -> dict[str, Any]:
@@ -205,17 +169,17 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="After submitting current output, validate progress and rebuild HTML instead of preparing another request.",
     )
-    parser.add_argument("--output-dir", default=Path("work/checkpoints"), type=Path)
-    parser.add_argument("--segments", default=Path("work/segments.jsonl"), type=Path)
-    parser.add_argument("--batches", default=Path("work/batches.jsonl"), type=Path)
-    parser.add_argument("--translations", default=Path("work/translations.jsonl"), type=Path)
-    parser.add_argument("--parallel-output", default=Path("output/parallel.html"), type=Path)
+    parser.add_argument("--output-dir", default=CHECKPOINTS_DIR, type=Path)
+    parser.add_argument("--segments", default=SEGMENTS_PATH, type=Path)
+    parser.add_argument("--batches", default=BATCHES_PATH, type=Path)
+    parser.add_argument("--translations", default=TRANSLATIONS_PATH, type=Path)
+    parser.add_argument("--parallel-output", default=PARALLEL_HTML_PATH, type=Path)
     parser.add_argument("--context-segments", default=8, type=int)
-    parser.add_argument("--prepare-script", default=Path("scripts/prepare_batch_request.py"), type=Path)
-    parser.add_argument("--merge-script", default=Path("scripts/merge_model_output.py"), type=Path)
-    parser.add_argument("--append-script", default=Path("scripts/append_translations.py"), type=Path)
-    parser.add_argument("--validator", default=Path("scripts/validate_translation_progress.py"), type=Path)
-    parser.add_argument("--assembler", default=Path("scripts/assemble_parallel.py"), type=Path)
+    parser.add_argument("--prepare-script", default=PREPARE_BATCH_REQUEST_SCRIPT, type=Path)
+    parser.add_argument("--merge-script", default=MERGE_MODEL_OUTPUT_SCRIPT, type=Path)
+    parser.add_argument("--append-script", default=APPEND_TRANSLATIONS_SCRIPT, type=Path)
+    parser.add_argument("--validator", default=VALIDATE_TRANSLATION_PROGRESS_SCRIPT, type=Path)
+    parser.add_argument("--assembler", default=ASSEMBLE_PARALLEL_SCRIPT, type=Path)
     parser.add_argument(
         "--no-print-request",
         action="store_true",
@@ -232,7 +196,10 @@ def main() -> None:
 
     args = parse_args()
     batches = read_jsonl(args.batches)
-    completed_ids = translated_ids(read_jsonl(args.translations, required=False))
+    _, batch_segment_ids = validate_batches(batches)
+    translations = read_jsonl(args.translations, required=False)
+    validate_translations(translations, known_segment_ids=set(batch_segment_ids))
+    completed_ids = completed_translation_ids(translations)
     latest_validation_report = validate_progress(args)
     performed = ["validate_progress"]
     submitted_batch_id: str | None = None
@@ -248,7 +215,9 @@ def main() -> None:
             latest_validation_report = validate_progress(args, batch_id)
             performed.extend([f"merge_output:{batch_id}", f"validate_batch:{batch_id}"])
             submitted_batch_id = batch_id
-            completed_ids = translated_ids(read_jsonl(args.translations, required=False))
+            translations = read_jsonl(args.translations, required=False)
+            validate_translations(translations, known_segment_ids=set(batch_segment_ids))
+            completed_ids = completed_translation_ids(translations)
             pending = first_pending_batch(batches, completed_ids)
 
     if args.assemble:
@@ -266,7 +235,7 @@ def main() -> None:
             "assembly": assembly_report,
             "message": "current progress validated and parallel HTML rebuilt",
         }
-        print(json.dumps(report, ensure_ascii=False, separators=(",", ":")))
+        emit_json_report(report)
         return
 
     if pending is None:
@@ -278,7 +247,7 @@ def main() -> None:
             "assembled": False,
             "message": "no pending batches; run with --assemble to rebuild HTML",
         }
-        print(json.dumps(report, ensure_ascii=False, separators=(",", ":")))
+        emit_json_report(report)
         return
 
     current_batch_id = str(pending["batch_id"])
@@ -296,7 +265,7 @@ def main() -> None:
         "assembled": False,
         "next_step": "Translate the request below, write model_output_path, then run this helper again.",
     }
-    print(json.dumps(report, ensure_ascii=False, separators=(",", ":")))
+    emit_json_report(report)
     if not args.no_print_request:
         print(REQUEST_BEGIN)
         print(request, end="" if request.endswith("\n") else "\n")

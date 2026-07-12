@@ -15,43 +15,21 @@ or explicit ``--expect-batches`` to assert that specific batches are complete.
 from __future__ import annotations
 
 import argparse
-import json
-from collections import Counter
 from pathlib import Path
 from typing import Any
 
-
-def read_jsonl(path: Path, required: bool = True) -> list[dict[str, Any]]:
-    if not path.exists():
-        if required:
-            raise FileNotFoundError(path)
-        return []
-
-    rows: list[dict[str, Any]] = []
-    with path.open("r", encoding="utf-8") as file:
-        for line_number, line in enumerate(file, start=1):
-            if not line.strip():
-                continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"{path}:{line_number}: invalid JSON: {exc}") from exc
-            if not isinstance(row, dict):
-                raise ValueError(f"{path}:{line_number}: row must be a JSON object")
-            rows.append(row)
-    return rows
-
-
-def find_duplicates(values: list[str]) -> list[str]:
-    counts = Counter(values)
-    return sorted(value for value, count in counts.items() if count > 1)
-
-
-def require_keys(rows: list[dict[str, Any]], keys: set[str], label: str) -> None:
-    for row_number, row in enumerate(rows, start=1):
-        missing = sorted(keys - set(row))
-        if missing:
-            raise ValueError(f"{label} row {row_number} missing keys: {', '.join(missing)}")
+from translation_core.cli import emit_json_report
+from translation_core.collections import duplicate_values as find_duplicates
+from translation_core.jsonl import read_jsonl
+from translation_core.paths import BATCHES_PATH, SEGMENTS_PATH, TRANSLATIONS_PATH
+from translation_core.progress import (
+    completed_translation_ids,
+    first_pending_batch,
+    missing_segment_ids,
+    pending_batch_summaries,
+    pending_batch_summary,
+)
+from translation_core.validation import require_keys
 
 
 def build_expected_batch_ids(
@@ -85,22 +63,6 @@ def build_expected_batch_ids(
     return expected_batch_ids
 
 
-def first_missing_batch(
-    batches: list[dict[str, Any]], translated_ids: set[str]
-) -> dict[str, Any] | None:
-    for batch in batches:
-        missing = [str(segment_id) for segment_id in batch["segment_ids"] if str(segment_id) not in translated_ids]
-        if missing:
-            return {
-                "batch_id": str(batch["batch_id"]),
-                "missing_count": len(missing),
-                "first_missing_segment_id": missing[0],
-                "last_missing_segment_id": missing[-1],
-                "segment_count": len(batch["segment_ids"]),
-            }
-    return None
-
-
 def validate(
     segments_path: Path,
     batches_path: Path,
@@ -128,11 +90,7 @@ def validate(
             if not isinstance(row["translation"], str) or not row["translation"].strip()
         }
     )
-    translated_id_set = {
-        str(row["segment_id"])
-        for row in translations
-        if isinstance(row["translation"], str) and row["translation"].strip()
-    }
+    translated_id_set = completed_translation_ids(translations)
     batch_ids = [str(row["batch_id"]) for row in batches]
 
     duplicate_segment_ids = find_duplicates(segment_ids)
@@ -167,36 +125,22 @@ def validate(
         batch_id = str(batch["batch_id"])
         if batch_id not in expected_batch_ids:
             continue
-        missing = [
-            str(segment_id)
-            for segment_id in batch["segment_ids"]
-            if str(segment_id) not in translated_id_set
-        ]
+        missing = missing_segment_ids(batch, translated_id_set)
         expected_segment_count += len(batch["segment_ids"])
         if missing:
             expected_missing_by_batch[batch_id] = missing
 
-    pending_batches: list[dict[str, Any]] = []
-    if list_pending > 0:
-        for batch in batches:
-            missing = [
-                str(segment_id)
-                for segment_id in batch["segment_ids"]
-                if str(segment_id) not in translated_id_set
-            ]
-            if not missing:
-                continue
-            pending_batches.append(
-                {
-                    "batch_id": str(batch["batch_id"]),
-                    "missing_count": len(missing),
-                    "first_missing_segment_id": missing[0],
-                    "last_missing_segment_id": missing[-1],
-                    "segment_count": len(batch["segment_ids"]),
-                }
-            )
-            if len(pending_batches) >= list_pending:
-                break
+    pending_batches = (
+        pending_batch_summaries(batches, translated_id_set, limit=list_pending)
+        if list_pending > 0
+        else []
+    )
+    next_pending = first_pending_batch(batches, translated_id_set)
+    next_missing_batch = (
+        pending_batch_summary(next_pending, translated_id_set)
+        if next_pending is not None
+        else None
+    )
 
     fatal_issues = {
         "duplicate_segment_ids": duplicate_segment_ids,
@@ -220,7 +164,7 @@ def validate(
         "unique_translation_ids": len(translated_id_set),
         "translated_source_segments": len(translated_source_ids),
         "pending_source_segments": len(pending_source_ids),
-        "next_missing_batch": first_missing_batch(batches, translated_id_set),
+        "next_missing_batch": next_missing_batch,
         "pending_batches": pending_batches,
         "checkpoint": {
             "expected_batch_ids": expected_batch_ids,
@@ -241,19 +185,19 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--segments",
-        default="work/segments.jsonl",
+        default=SEGMENTS_PATH,
         type=Path,
         help="Source segments JSONL. Default: work/segments.jsonl",
     )
     parser.add_argument(
         "--batches",
-        default="work/batches.jsonl",
+        default=BATCHES_PATH,
         type=Path,
         help="Translation batches JSONL. Default: work/batches.jsonl",
     )
     parser.add_argument(
         "--translations",
-        default="work/translations.jsonl",
+        default=TRANSLATIONS_PATH,
         type=Path,
         help="Translations JSONL. Default: work/translations.jsonl",
     )
@@ -292,7 +236,7 @@ def main() -> None:
         expect_count=args.expect_count,
         list_pending=args.list_pending,
     )
-    print(json.dumps(report, ensure_ascii=False, separators=(",", ":")))
+    emit_json_report(report)
     if not ok:
         raise SystemExit(1)
 

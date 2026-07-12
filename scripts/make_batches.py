@@ -8,30 +8,20 @@ context while still requiring translations to come back by segment id.
 from __future__ import annotations
 
 import argparse
-import json
-from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from translation_core.cli import emit_json_report
+from translation_core.jsonl import read_jsonl as _read_jsonl
+from translation_core.jsonl import write_jsonl
+from translation_core.paths import BATCHES_PATH, SEGMENTS_PATH
+from translation_core.text import byte_count
+from translation_core.validation import validate_batches as validate_batch_rows
+from translation_core.validation import validate_segments
+
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    with path.open("r", encoding="utf-8") as file:
-        for line_number, line in enumerate(file, start=1):
-            if not line.strip():
-                continue
-            try:
-                rows.append(json.loads(line))
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"{path}:{line_number}: invalid JSON: {exc}") from exc
-    return rows
-
-
-def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="\n") as file:
-        for row in rows:
-            file.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
+    return _read_jsonl(path, require_object=False)
 
 
 def compact_segment(segment: dict[str, Any]) -> dict[str, str]:
@@ -49,27 +39,6 @@ def format_source_text(segments: list[dict[str, Any]]) -> str:
             f"[{segment['id']} | {segment['kind']}]\n{segment['source']}"
         )
     return "\n\n".join(blocks)
-
-
-def byte_count(text: str) -> int:
-    return len(text.encode("utf-8"))
-
-
-def validate_segments(segments: list[dict[str, Any]]) -> None:
-    required_keys = {"id", "chapter_id", "order", "kind", "source"}
-    ids: list[str] = []
-
-    for row_number, segment in enumerate(segments, start=1):
-        missing_keys = sorted(required_keys - set(segment))
-        if missing_keys:
-            raise ValueError(
-                f"segment row {row_number} missing keys: {', '.join(missing_keys)}"
-            )
-        ids.append(str(segment["id"]))
-
-    duplicate_ids = sorted(segment_id for segment_id, count in Counter(ids).items() if count > 1)
-    if duplicate_ids:
-        raise ValueError(f"duplicate segment ids: {', '.join(duplicate_ids[:10])}")
 
 
 def build_batches(
@@ -163,6 +132,7 @@ def validate_batches(
     segments: list[dict[str, Any]],
     batches: list[dict[str, Any]],
 ) -> None:
+    validate_batch_rows(batches)
     expected_ids = [str(segment["id"]) for segment in segments]
     actual_ids = [
         str(segment_id)
@@ -185,13 +155,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--input",
-        default="work/segments.jsonl",
+        default=SEGMENTS_PATH,
         type=Path,
         help="Segments JSONL file. Default: work/segments.jsonl",
     )
     parser.add_argument(
         "--output",
-        default="work/batches.jsonl",
+        default=BATCHES_PATH,
         type=Path,
         help="Batches JSONL output file. Default: work/batches.jsonl",
     )
@@ -230,31 +200,28 @@ def main() -> None:
     validate_batches(segments, batches)
     write_jsonl(args.output, batches)
 
-    print(
-        json.dumps(
-            {
-                "input": str(args.input),
-                "output": str(args.output),
-                "segments": len(segments),
-                "batches": len(batches),
-                "max_bytes": args.max_bytes,
-                "max_chars": args.max_chars,
-                "max_segments": args.max_segments,
-                "largest_batch_bytes": max(
-                    (batch["source_byte_count"] for batch in batches),
-                    default=0,
-                ),
-                "largest_batch_chars": max(
-                    (batch["char_count"] for batch in batches),
-                    default=0,
-                ),
-                "largest_batch_segments": max(
-                    (len(batch["segment_ids"]) for batch in batches),
-                    default=0,
-                ),
-            },
-            ensure_ascii=False,
-        )
+    emit_json_report(
+        {
+            "input": str(args.input),
+            "output": str(args.output),
+            "segments": len(segments),
+            "batches": len(batches),
+            "max_bytes": args.max_bytes,
+            "max_chars": args.max_chars,
+            "max_segments": args.max_segments,
+            "largest_batch_bytes": max(
+                (batch["source_byte_count"] for batch in batches),
+                default=0,
+            ),
+            "largest_batch_chars": max(
+                (batch["char_count"] for batch in batches),
+                default=0,
+            ),
+            "largest_batch_segments": max(
+                (len(batch["segment_ids"]) for batch in batches),
+                default=0,
+            ),
+        }
     )
 
 

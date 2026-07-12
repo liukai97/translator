@@ -9,12 +9,14 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from translation_core.paths import VALIDATE_TRANSLATION_PROGRESS_SCRIPT
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Show compact translation progress.")
     parser.add_argument("--list-pending", default=10, type=int)
     parser.add_argument("--json", action="store_true", help="Print raw validator JSON.")
-    parser.add_argument("--validator", default=Path("scripts/validate_translation_progress.py"), type=Path)
+    parser.add_argument("--validator", default=VALIDATE_TRANSLATION_PROGRESS_SCRIPT, type=Path)
     return parser.parse_args()
 
 

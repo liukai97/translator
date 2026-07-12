@@ -14,57 +14,29 @@ from __future__ import annotations
 
 import argparse
 import html
-import json
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from translation_core.cli import emit_json_report
+from translation_core.jsonl import read_jsonl as _read_jsonl
+from translation_core.paths import BATCHES_PATH, PARALLEL_HTML_PATH, SEGMENTS_PATH, TRANSLATIONS_PATH
+from translation_core.validation import TRANSLATION_REQUIRED_KEYS, require_keys, validate_segments
+
 
 def read_jsonl(path: Path, required: bool = True) -> list[dict[str, Any]]:
-    if not path.exists():
-        if required:
-            raise FileNotFoundError(path)
-        return []
-
-    rows: list[dict[str, Any]] = []
-    with path.open("r", encoding="utf-8") as file:
-        for line_number, line in enumerate(file, start=1):
-            if not line.strip():
-                continue
-            try:
-                rows.append(json.loads(line))
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"{path}:{line_number}: invalid JSON: {exc}") from exc
-    return rows
-
-
-def validate_segments(segments: list[dict[str, Any]]) -> None:
-    required_keys = {"id", "chapter_id", "order", "kind", "source"}
-    ids: list[str] = []
-    for index, segment in enumerate(segments, start=1):
-        missing = sorted(required_keys - set(segment))
-        if missing:
-            raise ValueError(f"segment row {index} missing keys: {', '.join(missing)}")
-        ids.append(str(segment["id"]))
-
-    duplicate_ids = sorted(segment_id for segment_id, count in Counter(ids).items() if count > 1)
-    if duplicate_ids:
-        raise ValueError(f"duplicate segment ids: {', '.join(duplicate_ids[:10])}")
+    return _read_jsonl(path, required, require_object=False)
 
 
 def build_translation_map(
     translations: list[dict[str, Any]],
 ) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    require_keys(translations, TRANSLATION_REQUIRED_KEYS, "translation")
     translation_map: dict[str, dict[str, Any]] = {}
     duplicate_ids: list[str] = []
 
-    for row_number, row in enumerate(translations, start=1):
-        if "segment_id" not in row:
-            raise ValueError(f"translation row {row_number} missing segment_id")
-        if "translation" not in row:
-            raise ValueError(f"translation row {row_number} missing translation")
-
+    for row in translations:
         segment_id = str(row["segment_id"])
         if segment_id in translation_map:
             duplicate_ids.append(segment_id)
@@ -74,10 +46,9 @@ def build_translation_map(
 
 
 def build_batch_map(batches: list[dict[str, Any]]) -> dict[str, str]:
+    require_keys(batches, {"batch_id", "segment_ids"}, "batch")
     batch_by_segment: dict[str, str] = {}
-    for row_number, batch in enumerate(batches, start=1):
-        if "batch_id" not in batch or "segment_ids" not in batch:
-            raise ValueError(f"batch row {row_number} missing batch_id or segment_ids")
+    for batch in batches:
         for segment_id in batch["segment_ids"]:
             batch_by_segment[str(segment_id)] = str(batch["batch_id"])
     return batch_by_segment
@@ -490,25 +461,25 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--segments",
-        default="work/segments.jsonl",
+        default=SEGMENTS_PATH,
         type=Path,
         help="Source segments JSONL. Default: work/segments.jsonl",
     )
     parser.add_argument(
         "--translations",
-        default="work/translations.jsonl",
+        default=TRANSLATIONS_PATH,
         type=Path,
         help="Translations JSONL. Default: work/translations.jsonl",
     )
     parser.add_argument(
         "--batches",
-        default="work/batches.jsonl",
+        default=BATCHES_PATH,
         type=Path,
         help="Optional batches JSONL for metadata. Default: work/batches.jsonl",
     )
     parser.add_argument(
         "--output",
-        default="output/parallel.html",
+        default=PARALLEL_HTML_PATH,
         type=Path,
         help="Output HTML path. Default: output/parallel.html",
     )
@@ -547,13 +518,7 @@ def main() -> None:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(document, encoding="utf-8", newline="\n")
 
-    print(
-        json.dumps(
-            {"output": str(args.output), **stats},
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
-    )
+    emit_json_report({"output": str(args.output), **stats})
 
 
 if __name__ == "__main__":
