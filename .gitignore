@@ -1,3 +1,5 @@
 /input/
 /output/
 /work/
+.python312/
+scripts/__pycache__/

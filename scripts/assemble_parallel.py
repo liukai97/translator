@@ -346,6 +346,13 @@ nav span {
   padding: 14px 0;
   scroll-margin-top: 126px;
 }
+body.standard-output nav {
+  top: 0;
+  max-height: 100vh;
+}
+body.standard-output .segment {
+  scroll-margin-top: 16px;
+}
 .segment.is-heading {
   padding-top: 26px;
 }
@@ -436,16 +443,9 @@ nav span {
 }
 """
 
-    doc = f"""<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{html.escape(title)}</title>
-  <style>{css}</style>
-</head>
-<body>
-  <header>
+    debug_header_html = ""
+    if show_metadata:
+        debug_header_html = f"""  <header>
     <h1>{html.escape(title)}</h1>
     <div class="summary">
       <span>generated: {html.escape(generated_at)}</span>
@@ -456,7 +456,20 @@ nav span {
       <span>duplicates: {len(duplicate_translation_ids)}</span>
       <span>unmatched: {len(unmatched_translation_ids)}</span>
     </div>
-  </header>
+  </header>"""
+
+    body_class = "debug-output" if show_metadata else "standard-output"
+
+    doc = f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{html.escape(title)}</title>
+  <style>{css}</style>
+</head>
+<body class="{body_class}">
+{debug_header_html}
   <main>
     <nav aria-label="Chapters">
       {toc_html}
