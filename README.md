@@ -63,6 +63,22 @@ input/book.md
 
 如果已经有新的 `work/segments.jsonl` 和 `work/batches.jsonl`，通常不需要重复准备。重建这些文件前要确认不会破坏已有 `work/translations.jsonl` 的段落 ID 对齐关系。
 
+### 从 EPUB 生成 Markdown
+
+EPUB 输入可以先转换成适合分段和翻译的纯文本 Markdown：
+
+```powershell
+.\.python312\python.exe scripts\epub_to_markdown.py "input\书名.epub"
+```
+
+默认输出为 EPUB 同目录、同名的 `.md` 文件，也可以显式指定路径：
+
+```powershell
+.\.python312\python.exe scripts\epub_to_markdown.py "input\书名.epub" -o "input\转换结果.md"
+```
+
+转换器按 EPUB `spine` 中声明的阅读顺序处理内容，不依赖 XHTML 文件名。图片不会被提取或写入 Markdown；非空的图片 `alt` 会转换为二级标题。日文振假名会保留正文汉字并删除 `rt` / `rp` 读音，以免 HTML 标签进入后续翻译流程。脚本默认拒绝覆盖已有输出；确认需要覆盖时添加 `--force`。
+
 ## 日常续译流程
 
 常规入口是：
