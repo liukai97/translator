@@ -44,7 +44,7 @@ def trim_outer_blank_lines(lines: list[str]) -> list[str]:
 def build_segments(
     text: str,
     strip_page_markers: bool = True,
-    max_segment_bytes: int = 500,
+    max_segment_bytes: int = 1000,
 ) -> list[dict[str, Any]]:
     if max_segment_bytes < 1:
         raise ValueError("max_segment_bytes must be positive")
@@ -144,11 +144,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--max-segment-bytes",
-        default=500,
+        default=1000,
         type=int,
         help=(
             "Maximum UTF-8 bytes per body segment. Segments keep whole lines, "
-            "so a single long line may exceed this value. Default: 500"
+            "so a single long line may exceed this value. Default: 1000"
         ),
     )
     return parser.parse_args()

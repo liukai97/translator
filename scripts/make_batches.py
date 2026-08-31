@@ -167,9 +167,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--max-bytes",
-        default=10000,
+        default=20000,
         type=int,
-        help="Maximum UTF-8 source bytes per batch. Default: 10000",
+        help="Maximum UTF-8 source bytes per batch. Default: 20000",
     )
     parser.add_argument(
         "--max-segments",
