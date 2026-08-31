@@ -54,6 +54,7 @@ Rules:
 - Do not combine multiple source segments into one translation entry.
 - Do not split one source segment into multiple translation entries.
 - Preserve every line break inside each source segment, including blank lines. The translation must contain exactly the same number of `\n` characters as the source segment.
+- Treat every `⟦EPUB_IMG:...⟧` token as an opaque inline image marker. Copy each token exactly once and unchanged, keep multiple tokens in source order, and place it at the corresponding semantic position in the Chinese translation.
 - Keep each JSONL object on one physical file line. Encode segment-internal line breaks as escaped `\n` characters inside the JSON `translation` string.
 - Translate headings as headings, but store only the translated text in `translation`.
 - If a segment is a `book_title` or `heading`, translate it naturally and keep its structural role implied by the segment metadata.
@@ -240,6 +241,7 @@ Before finalizing a translation batch, verify:
 - No non-empty paragraph is skipped.
 - No two source segments are merged into one translation.
 - Every translation preserves the source segment's exact internal line-break count and blank-line layout.
+- Every EPUB image placeholder is preserved exactly once, unchanged, and in source order.
 - Headings remain concise and heading-like.
 - Names and recurring terms match earlier choices.
 - Dialogue punctuation is balanced.

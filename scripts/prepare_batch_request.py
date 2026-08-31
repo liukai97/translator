@@ -170,6 +170,7 @@ def render_request(
         "8. Do not append to `work/translations.jsonl` directly; validate this batch output first.",
         "9. Preserve every line break and blank line inside each source segment; translation and source must contain the same number of `\\n` characters.",
         "10. Keep one JSON object per physical JSONL line. Represent internal translation line breaks with escaped `\\n`, never literal line breaks between JSON tokens.",
+        "11. Treat every `⟦EPUB_IMG:...⟧` token as an opaque inline image marker: copy each token exactly once and unchanged, keep multiple tokens in source order, and place it at the corresponding semantic position in the Chinese translation.",
         "",
         "## Style Guide",
         "",

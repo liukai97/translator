@@ -1,9 +1,11 @@
 """Convert an EPUB book to translation-friendly Markdown.
 
 The converter follows the reading order declared by the EPUB package rather
-than sorting XHTML filenames. Images are not extracted or linked. A non-empty
-HTML ``img`` alt attribute is treated as a section title, while Japanese ruby
-annotations are flattened to their base text by dropping ``rt``/``rp`` nodes.
+than sorting XHTML filenames. Standalone image blocks are not extracted or
+linked, and their non-empty HTML ``img`` alt attributes are treated as section
+titles. Images embedded in text are represented by reversible placeholders at
+their original positions. Japanese ruby annotations are flattened to their
+base text by dropping ``rt``/``rp`` nodes.
 """
 
 from __future__ import annotations
@@ -17,6 +19,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 from xml.etree import ElementTree as ET
+
+from translation_core.epub_placeholders import format_epub_image_placeholder
 
 
 CONTAINER_PATH = "META-INF/container.xml"
@@ -89,24 +93,50 @@ def clean_text_node(text: str | None) -> str:
     return (text or "").replace("\r", "").replace("\n", "")
 
 
-def collect_inline(element: ET.Element) -> str:
+def collect_inline(
+    element: ET.Element,
+    *,
+    include_image_placeholders: bool = False,
+) -> str:
     parts = [clean_text_node(element.text)]
     for child in element:
         tag = local_name(child.tag)
-        if tag in SKIPPED_INLINE_TAGS or tag in {"img", "image", "svg"}:
+        if tag in SKIPPED_INLINE_TAGS or tag in {"image", "svg"}:
             pass
+        elif tag == "img":
+            if include_image_placeholders:
+                parts.append(
+                    format_epub_image_placeholder(
+                        child.attrib.get("src", ""),
+                        child.attrib.get("alt", ""),
+                    )
+                )
         elif tag == "br":
             parts.append("\n")
         else:
-            parts.append(collect_inline(child))
+            parts.append(
+                collect_inline(
+                    child,
+                    include_image_placeholders=include_image_placeholders,
+                )
+            )
         parts.append(clean_text_node(child.tail))
     return "".join(parts)
 
 
-def render_inline(element: ET.Element) -> str:
-    """Render visible inline text, omitting ruby readings and images."""
+def render_inline(
+    element: ET.Element,
+    *,
+    include_image_placeholders: bool = False,
+) -> str:
+    """Render visible inline text while omitting ruby readings."""
 
-    return normalize_text(collect_inline(element))
+    return normalize_text(
+        collect_inline(
+            element,
+            include_image_placeholders=include_image_placeholders,
+        )
+    )
 
 
 def find_first(root: ET.Element, name: str) -> ET.Element | None:
@@ -362,9 +392,17 @@ def convert_document(
         nav_titles = [
             label for fragment, label in targets if fragment and fragment in ids
         ]
-        alt_titles = image_alt_titles(element)
+        text_without_images = render_inline(element)
+        alt_titles = (
+            image_alt_titles(element)
+            if not text_without_images
+            else []
+        )
         tag = local_name(element.tag)
-        text = render_inline(element)
+        text = render_inline(
+            element,
+            include_image_placeholders=bool(text_without_images),
+        )
 
         titles: list[tuple[str, int]] = []
         for title in [*nav_titles, *alt_titles]:
@@ -441,8 +479,9 @@ def convert_epub(epub_path: Path) -> ConversionResult:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Convert EPUB XHTML in spine order to Markdown. Images are omitted, "
-            "image alt text becomes headings, and ruby readings are removed."
+            "Convert EPUB XHTML in spine order to Markdown. Standalone images "
+            "are omitted, their alt text becomes headings, inline images become "
+            "placeholders, and ruby readings are removed."
         )
     )
     parser.add_argument("input", type=Path, help="Source .epub file")

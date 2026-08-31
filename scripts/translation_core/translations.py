@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from translation_core.epub_placeholders import extract_epub_image_placeholders
+
 
 SUPPORTED_TRANSLATION_STATUSES = frozenset({"translated", "needs_review"})
 
@@ -33,6 +35,16 @@ def normalize_translation_row(
             f"{location} ({segment_id}) line break count mismatch: "
             f"source={source_line_breaks}, translation={translation_line_breaks}; "
             "preserve internal line breaks as escaped \\n inside the JSON string"
+        )
+
+    source_placeholders = extract_epub_image_placeholders(normalized_source)
+    translation_placeholders = extract_epub_image_placeholders(normalized_translation)
+    if translation_placeholders != source_placeholders:
+        raise ValueError(
+            f"{location} ({segment_id}) EPUB image placeholder mismatch: "
+            f"source={len(source_placeholders)}, "
+            f"translation={len(translation_placeholders)}; preserve every "
+            "⟦EPUB_IMG:...⟧ token unchanged and in source order"
         )
 
     status = str(row.get("status") or "translated")

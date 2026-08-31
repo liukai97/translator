@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from translation_core.cli import emit_json_report
+from translation_core.epub_placeholders import replace_epub_image_placeholders_for_display
 from translation_core.jsonl import read_jsonl as _read_jsonl
 from translation_core.paths import BATCHES_PATH, PARALLEL_HTML_PATH, SEGMENTS_PATH, TRANSLATIONS_PATH
 from translation_core.validation import TRANSLATION_REQUIRED_KEYS, require_keys, validate_segments
@@ -55,7 +56,8 @@ def build_batch_map(batches: list[dict[str, Any]]) -> dict[str, str]:
 
 
 def line_html(text: str) -> str:
-    escaped = html.escape(text)
+    display_text = replace_epub_image_placeholders_for_display(text)
+    escaped = html.escape(display_text)
     return escaped.replace("\n", "<br>\n")
 
 
