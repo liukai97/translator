@@ -1,13 +1,13 @@
 # translator
 
-个人日语小说翻译流水线。项目重点不是一次性生成电子书，而是把“原文分段、批次翻译、进度保存、结构校验、左右对照阅读”做成可恢复、可检查、可继续的工作流。
+个人日语小说翻译流水线。项目把“原文分段、批次翻译、进度保存、结构校验、左右对照阅读、译文 EPUB 回制”做成可恢复、可检查、可继续的工作流。
 
 ## 当前定位
 
 - 输入：日语小说 `txt` / `md`，当前默认使用 `input/book.md`。
 - 中间层：`work/segments.jsonl` 保存稳定段落 ID，`work/batches.jsonl` 保存翻译批次，`work/translations.jsonl` 保存已完成译文。
 - 翻译方式：Codex 按 `skills/japanese-novel-translation/SKILL.md` 的规则逐批翻译，脚本负责准备请求、合并输出和校验结构。
-- 输出：`output/parallel.html`，用于原文 / 译文左右对照阅读。
+- 输出：`output/parallel.html` 用于原文 / 译文左右对照阅读；翻译完成后也可生成保留原书资源和阅读顺序的中文 EPUB。
 
 ## 目录说明
 
@@ -19,6 +19,7 @@ work/batches.jsonl              LLM 翻译批次
 work/translations.jsonl         已确认写入的译文进度
 work/checkpoints/               单批请求和模型输出草稿
 output/parallel.html            左右对照阅读文件
+output/*.zh-CN.epub             从译文回制的中文 EPUB
 scripts/                        分段、批次、合并、校验、组装脚本
 skills/japanese-novel-translation/SKILL.md
                                翻译风格、格式和 QA 规则
@@ -39,6 +40,8 @@ input/book.md
   -> work/checkpoints/<batch>_output.jsonl
   -> work/translations.jsonl
   -> output/parallel.html
+  -> scripts/build_translated_epub.py
+  -> output/<原书名>.zh-CN.epub
 ```
 
 `segments.jsonl` 是最重要的对齐层。每个原文段落都有稳定 `id`，后续译文必须用同一个 `segment_id` 对应回来。不要在翻译时合并、拆分、跳过或重排段落。
@@ -77,7 +80,37 @@ EPUB 输入可以先转换成适合分段和翻译的纯文本 Markdown：
 .\.python312\python.exe scripts\epub_to_markdown.py "input\书名.epub" -o "input\转换结果.md"
 ```
 
-转换器按 EPUB `spine` 中声明的阅读顺序处理内容，不依赖 XHTML 文件名。图片不会被提取或写入 Markdown；非空的图片 `alt` 会转换为二级标题。日文振假名会保留正文汉字并删除 `rt` / `rp` 读音，以免 HTML 标签进入后续翻译流程。脚本默认拒绝覆盖已有输出；确认需要覆盖时添加 `--force`。
+转换器按 EPUB `spine` 中声明的阅读顺序处理内容，不依赖 XHTML 文件名。独立图片不会写入 Markdown，其非空 `alt` 可作为章节标题；文字块中的行内图片会变成可逆的 `⟦EPUB_IMG:...⟧` 占位符。日文振假名会保留正文汉字并删除 `rt` / `rp` 读音，以免 HTML 标签进入后续翻译流程。脚本默认拒绝覆盖已有输出；确认需要覆盖时添加 `--force`。
+
+## 从译文回制 EPUB
+
+完成全部翻译并通过进度校验后，先执行只读映射检查：
+
+```powershell
+.\.python312\python.exe scripts\build_translated_epub.py `
+  "input\放課後の魔術師(1).epub" `
+  --dry-run
+```
+
+检查通过后生成中文 EPUB：
+
+```powershell
+.\.python312\python.exe scripts\build_translated_epub.py `
+  "input\放課後の魔術師(1).epub"
+```
+
+默认读取 `work/book.no_pages.md`、`work/segments.jsonl` 和 `work/translations.jsonl`，输出到 `output/<原书名>.zh-CN.epub`。也可以显式指定所有路径：
+
+```powershell
+.\.python312\python.exe scripts\build_translated_epub.py `
+  "input\原书.epub" `
+  --source "work\book.no_pages.md" `
+  --segments "work\segments.jsonl" `
+  --translations "work\translations.jsonl" `
+  --output "output\原书.zh-CN.epub"
+```
+
+构建器会先确认原 EPUB 回抽结果与 canonical source 完全一致，再按 spine 顺序做确定性 DOM 映射。它会保留链接属性和原始图片节点、把正文改为从上到下的横排并将翻页方向设为从左到右、更新书名/语言/UUID/目录，并校验 ZIP 结构、资源哈希、本地引用和最终回读内容。任何映射歧义或结构漂移都会停止构建。默认拒绝覆盖已有输出；确认替换时使用 `--force`。源 EPUB 始终只读。
 
 ## 日常续译流程
 
@@ -205,4 +238,3 @@ output/parallel.html
 - 不要直接编辑 `work/translations.jsonl` 来覆盖已有译文，除非明确是在做修订并知道会影响哪些 `segment_id`。
 - 如果校验报重复 `segment_id`，先停止续译，清理重复项后再继续。
 - 如果 `translation_task_loop.py` 提示模型输出比请求文件旧，说明 checkpoint 可能是旧批次残留，应重新确认当前请求后再写输出。
-- `plan.md` 是早期设计记录，实际使用以 README、脚本参数和 `japanese-novel-translation` skill 为准。
