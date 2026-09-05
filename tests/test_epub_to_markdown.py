@@ -11,6 +11,9 @@ SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 from epub_to_markdown import convert_epub  # noqa: E402
+from translation_core.epub_placeholders import (  # noqa: E402
+    format_epub_image_placeholder,
+)
 
 
 class EpubToMarkdownTests(unittest.TestCase):
@@ -123,6 +126,41 @@ class EpubToMarkdownTests(unittest.TestCase):
 
         self.assertIn("## NCX 章节", result.markdown)
         self.assertIn("正文。", result.markdown)
+
+    def test_emits_inline_images_in_dom_order_including_inside_ruby(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            epub_path = Path(temp_dir) / "images.epub"
+            with zipfile.ZipFile(epub_path, "w") as archive:
+                archive.writestr("mimetype", "application/epub+zip")
+                archive.writestr(
+                    "META-INF/container.xml",
+                    """<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+<rootfiles><rootfile full-path="book.opf"/></rootfiles></container>""",
+                )
+                archive.writestr(
+                    "book.opf",
+                    """<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+<metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>图片测试</dc:title></metadata>
+<manifest><item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/></manifest>
+<spine><itemref idref="chapter"/></spine></package>""",
+                )
+                archive.writestr(
+                    "chapter.xhtml",
+                    """<html xmlns="http://www.w3.org/1999/xhtml"><body>
+<p><img src="standalone.png" alt="独立标题"/></p>
+<p>甲<img src="one a.png" alt=""/>乙<ruby><rb><img src="two.png" alt="二"/></rb><rt>读音</rt></ruby>丙</p>
+</body></html>""",
+                )
+
+            result = convert_epub(epub_path)
+
+        first = format_epub_image_placeholder("one a.png", "")
+        second = format_epub_image_placeholder("two.png", "二")
+        self.assertIn("## 独立标题", result.markdown)
+        self.assertNotIn("standalone.png", result.markdown)
+        self.assertIn(f"甲{first}乙{second}丙", result.markdown)
+        self.assertLess(result.markdown.index(first), result.markdown.index(second))
+        self.assertNotIn("读音", result.markdown)
 
 
 if __name__ == "__main__":
